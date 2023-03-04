@@ -1,16 +1,25 @@
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const app = express();
 const http = require("http").Server(app);
 
-const clientOriginUrl = "http://localhost:4200";
+const clientOriginUrl = "*";
+
 let players = [];
 let voteFeed = [];
+let voteHistoryFeed = [];
+let showVotesState = false;
 
 const io = require("socket.io")(http, {
+  pingTimeout: 360000,
+  pingInterval: 20000,
   cors: {
     origin: clientOriginUrl,
+    allowedHeaders: ['Content-Type'],
     methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+    allowEIO3: true,
   },
 });
 
@@ -24,7 +33,7 @@ app.use(
   })
 );
 
-// Serve static files
+// // Serve static files
 app.use(express.static("public"));
 
 // Define endpoint for '/'
@@ -33,10 +42,15 @@ app.get("/", (req, res) => {
 });
 
 app.get("/clear-players", (req, res) => {
-  console.warn("CLEAR PLAYERS");
   players = [];
   res.json({
     message: "cleared!",
+  });
+});
+
+app.get("/get-players", (req, res) => {
+  res.json({
+    players,
   });
 });
 
@@ -56,23 +70,46 @@ io.on("connection", (socket) => {
       });
     };
     updatePlayerVotes({ name, vote });
-    socket.emit("players-updated", { players });
+    io.emit("players-updated", { players: [...players] });
 
     voteFeed = [...voteFeed, `${name} has voted`];
-    socket.emit("vote-updated", {
+    io.emit("vote-updated", {
       voteFeed,
     });
-    console.warn('VOTE FEED >>>', voteFeed);
   });
 
-  socket.on("clear-votes", players => {
-    this.players = players;
-    socket.emit("players-updated", { players });
+  socket.on("clear-votes", () => {
+    voteFeed = [];
+    const getClearedPlayerArray = () => {
+      return players.map((player) => ({
+        name: player.name,
+        vote: "",
+        hasVoted: false,
+      }));
+    };
+    const newPlayers = getClearedPlayerArray();
+    players = [...newPlayers];
+    io.emit("players-updated", { players });
+  });
+
+  socket.on("show-votes", (showVotes) => {
+    showVotesState = showVotes;
+    io.emit("show-votes", showVotes);
+  });
+
+  socket.on("record-vote-history", ({ votingOn, average }) => {
+    voteHistoryFeed = [...voteHistoryFeed, `${votingOn} - ${average} average`];
+    io.emit("vote-history-updated", {
+      voteHistoryFeed,
+    });
+  });
+
+  socket.on("vote-on", (voteOn) => {
+    io.emit("vote-on-changed", voteOn);
   });
 
   socket.on("join-game", (data) => {
     const { playerName: name } = data;
-    console.log("Now joined game:", name);
     const isPlayerAlreadyJoined = (name) => {
       const i = players.findIndex((e) => e.name === name);
       return i > -1;
@@ -80,20 +117,26 @@ io.on("connection", (socket) => {
 
     if (!isPlayerAlreadyJoined(name)) {
       players.unshift({ name, vote: "", hasVoted: false });
-      socket.emit("players-updated", { players });
+      console.log("Now joined game:", name, players);
+      io.emit("players-updated", { players });
     }
   });
 
   // Listen for disconnection event
   socket.on("disconnect", () => {
     console.log("A user disconnected");
-    socket.emit("server-disconnect", { message: "Server disconnected!" });
+    socket.emit("server-disconnect", {
+      message: "User disconnected from server!",
+    });
+    voteFeed = [];
     players = [];
+    voteHistoryFeed = [];
+    showVotesState = false;
   });
 });
 
 // Start the server
-const port = 3000;
+const port = process.env.PORT || 3000;
 http.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
